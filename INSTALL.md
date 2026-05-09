@@ -53,26 +53,57 @@ From the Quest, quickly verify you can reach the Linux IP: open Meta Browser and
 
 If `ping` fails, the devices are on different networks or AP isolation is enabled on your router. CloudXR will not work until that's fixed.
 
-### 0.4 Network quality requirements (CRITICAL for CloudXR)
+### 0.4 Network quality requirements
 
-CloudXR streams two stereo eye buffers as compressed video at 60–90 Hz from
-Linux to the Quest. This is roughly 30–100 Mbps with sub-frame timing
-constraints. The link between them must be:
+CloudXR streams two stereo eye buffers as compressed video at 60–90 Hz
+from Linux to the Quest. NVIDIA publishes specific requirements for
+the SDK; these are taken directly from NVIDIA's
+[CloudXR Network Setup](https://docs.nvidia.com/cloudxr-sdk/latest/requirement/network_setup.html)
+and
+[System Requirements](https://docs.nvidia.com/cloudxr-sdk/release/4.0/usr_guide/system_requirements.html)
+pages.
 
-| Metric             | Healthy             | Bad (will corrupt) |
-|--------------------|---------------------|--------------------|
-| Average ping       | <10 ms              | >20 ms             |
-| Max ping           | <20 ms              | >50 ms             |
-| Ping variance (mdev) | <5 ms             | >10 ms             |
-| Packet loss        | 0%                  | any                |
-| Both devices on    | 5 GHz Wi-Fi         | 2.4 GHz            |
-| 5 GHz channel      | 36 / 40 / 44 / 48   | 60+ (DFS)          |
+| Metric                 | NVIDIA's stated requirement                                      |
+|------------------------|------------------------------------------------------------------|
+| Bandwidth              | 50+ Mbps sustained client→server; 100 Mbps available recommended |
+| End-to-end latency     | 60–120 ms acceptable; ≤30 ms ideal; ≤100 ms maximum for usable   |
+| Wi-Fi band             | 5 GHz or 6 GHz only — 2.4 GHz **explicitly not supported**       |
+| Wireless hops          | At most one between server and client                            |
+| Server connection      | Ethernet recommended; Powerline / VPN explicitly not supported   |
+| 5 GHz channel          | Manual selection recommended; channels 44 or 149 with 80 MHz width are explicitly recommended for Apple-family clients |
 
-**Symptoms of bad network during CloudXR session** — tearing, macroblocking
-(rainbow squares), freezing, ghosting, flickering — especially correlated
-with head motion or scene motion. Encoded video frame size spikes when
-content changes; if Wi-Fi can't deliver the burst before the next frame
-deadline, you get all five symptoms at once.
+These are NVIDIA's published thresholds and define the floor for whether
+CloudXR can run at all — they do not guarantee a clean experience under
+load. The numbers below were observed empirically on our setup and
+illustrate where the published values are necessary but not sufficient.
+
+#### Empirical findings on our setup
+
+In our environment — a single dense urban flat with ~10 visible APs on
+overlapping 5 GHz channels — we observed the following:
+
+- Idle ping between Linux and Quest was 4–10 ms, comfortably within
+  NVIDIA's "ideal" range
+- Under continuous head/scene motion, ping spiked into the 60–200 ms
+  range with per-sample variance approaching 200 ms
+- During those spikes, the visible streaming corruption was the
+  classic set of symptoms of a video stream missing frames: tearing,
+  macroblocking, freezing, ghosting, flickering — most strongly
+  correlated with motion that produces large encoded frames
+
+What this implied (NVIDIA's docs do not state it directly): **the network
+must deliver each encoded frame within a fixed budget, and high variance
+under load can break the stream even when the average looks fine.** A
+`60 ms avg / 5 ms mdev` link will work cleanly; a `50 ms avg / 80 ms
+mdev` link will not. NVIDIA's thresholds are necessary but not
+sufficient — variance under load matters as much as average.
+
+#### Symptoms of a bad network during a CloudXR session
+
+Tearing, macroblocking (rainbow blocks), freezing, ghosting, flickering
+— especially correlated with head motion or scene motion. If the
+network cannot deliver an encoded frame before the next frame deadline,
+several of these appear at once.
 
 #### 0.4.1 Measure your link
 
@@ -85,37 +116,51 @@ tail -5 /tmp/ping.log
 ```
 
 A summary line appears at the end like
-`rtt min/avg/max/mdev = 1.234/2.567/3.890/0.456 ms`. If `max` is more than
-20 ms or `mdev` is more than 5 ms, the link cannot reliably stream CloudXR
-under load.
+`rtt min/avg/max/mdev = 1.234/2.567/3.890/0.456 ms`.
+
+NVIDIA's docs give end-to-end latency budgets up to 100 ms, but a high
+`mdev` (jitter) under load is the better signal of stream-quality
+problems on Wi-Fi. As a working rule from our observations, sustained
+streaming was clean when `max < 30 ms` and `mdev < 10 ms` during
+motion; above those numbers we saw the corruption symptoms above.
 
 #### 0.4.2 Check what band each device is on
 
 ```bash
 # Linux band
 iwconfig 2>/dev/null | grep Frequency
-# Frequency 2.4xx GHz → 2.4 GHz (BAD)
+# Frequency 2.4xx GHz → 2.4 GHz (NVIDIA explicitly does not support this for CloudXR)
 # Frequency 5.xx GHz  → 5 GHz   (good)
 
 # Surrounding networks (channel congestion check)
 nmcli -f IN-USE,SSID,CHAN,SIGNAL,RATE dev wifi | head -20
 # CHAN  1, 6, 11             → 2.4 GHz
-# CHAN 36-48                 → 5 GHz, non-DFS, preferred
-# CHAN 52-144                → 5 GHz, DFS (radar shared, can drop)
-# CHAN 149-165               → 5 GHz, non-DFS, preferred
+# CHAN 36-48                 → 5 GHz, non-DFS, low channels (preferred)
+# CHAN 52-144                → 5 GHz, DFS (radar shared, can suspend transmission)
+# CHAN 149-165               → 5 GHz, non-DFS, high channels (preferred)
 ```
 
+NVIDIA explicitly recommends channels **44 or 149 with 80 MHz width**
+for Apple Vision Pro clients. The same channels are reasonable starting
+points for Quest 3 — both are non-DFS, and both sit at the edges of
+the 5 GHz allocation and tend to be less crowded than the middle of
+the band.
+
 Quest band: **Settings → Wi-Fi → tap connected network → Frequency/Band**.
-Confirm 5 GHz. If it shows 2.4 GHz, either the router pushed it there for
-range reasons, or you're connected to a 2.4-only SSID.
+Confirm 5 GHz. If it shows 2.4 GHz, the router pushed it there for
+range reasons or you are connected to a 2.4-only SSID. CloudXR will
+not work on 2.4 GHz regardless of how the rest of the system is
+configured.
 
-#### 0.4.3 Fixes (best-to-worst)
+#### 0.4.3 Fixes
 
-**1. Plug Linux into Ethernet** (single biggest win, ~£5 cable, zero config)
+**1. Plug Linux into Ethernet** — explicitly recommended by NVIDIA
+("the server should be connected to the network via Ethernet"). The
+single biggest practical win, and the canonical CloudXR deployment.
 
-When Linux is wired and Quest is wireless, they don't compete for airtime.
-The Linux→router leg is 0.5 ms wired; only the router→Quest leg uses
-Wi-Fi. Total path becomes consistently <10 ms.
+When Linux is wired and Quest is wireless, they don't compete for
+airtime. The Linux→router leg is 0.5 ms wired; only the router→Quest
+leg uses Wi-Fi.
 
 ```bash
 # Verify after plugging cable in (Linux may need to reconnect)
@@ -123,39 +168,40 @@ ip -4 addr show | grep "inet "
 # A new IP will appear on eth0/enp*/similar
 ```
 
-If the Ethernet IP differs from the previous Wi-Fi IP, tell the Quest the
-new server IP (`<LINUX_IP>` field in the CloudXR.js form on `:8080`).
+If the Ethernet IP differs from the previous Wi-Fi IP, tell the Quest
+the new server IP (`<LINUX_IP>` field in the CloudXR.js form on
+`:8080`).
 
-**2. Switch the router's 5 GHz channel to 36, 40, 44, or 48**
+**2. Switch the router's 5 GHz network to channel 44 or 149 with 80 MHz width**
 
-These are non-DFS — never affected by radar interruptions. Login to the
-router admin (usually `http://192.168.1.1`, password on a sticker on the
-router) → Wireless → 5 GHz channel → set to one of the above. Reconnect
-both devices, retest §0.4.1.
-
-If your router doesn't expose channel selection (some ISP boxes lock it),
-move on to fix 3.
+NVIDIA's specific recommendation for Apple Vision Pro clients; both
+channels are non-DFS so the AP never has to suspend transmission for
+radar avoidance, and both are typically less crowded than the
+middle of the band. Login to the router admin (usually
+`http://192.168.1.1`, password on a sticker) → Wireless → 5 GHz
+channel → set to 44 or 149 → channel width 80 MHz. Reconnect both
+devices, retest §0.4.1. If your router doesn't expose channel
+selection, move on to fix 3.
 
 **3. Move the headset and Linux box closer to the router**
 
-Every wall and metre adds latency under congestion. A cable trace of
-"server in one room, router in another, headset in a third" multiplies
-contention symptoms.
+NVIDIA recommends "line-of-sight to a beam-forming access point".
+Walls and distance add latency under congestion. A topology of
+"server in one room, router in another, headset in a third"
+multiplies contention.
 
-**4. Powerline adapter (Ethernet-over-mains)**
+**4. NVIDIA's last-resort: server-broadcast hotspot**
 
-If a physical Ethernet run isn't possible, powerline adapters (~£30 a
-pair) give around 50% of true Ethernet performance and require no new
-cabling between rooms. Plug one near the router, one near the Linux box,
-patch each to its device with a short cable.
+Where the network cannot be controlled (corporate Wi-Fi, locked ISP
+router), NVIDIA suggests broadcasting a 5 GHz network directly from
+the server (their docs reference Windows Mobile Hotspot). The Linux
+analogue is `hostapd` on the workstation's Wi-Fi card; same idea.
 
-**5. Last resort: cap CloudXR's peak bitrate**
+**5. Avoid Powerline Ethernet (NVIDIA explicitly does not recommend)**
 
-If the network genuinely is what it is, you can tell CloudXR to stay
-within what the link can sustain. This adds two `nv_cxr_service_set_*`
-calls in `cxr_service.cpp`. Trade-off: softer picture but stable. Only
-worth it if 1–4 are all blocked. See `cxr_service.cpp` and the CloudXR
-SDK property reference for `bitrate-mbps` and similar keys.
+NVIDIA's Network Setup page states Powerline is not supported because
+electrical wiring quality varies. Avoid even though the products look
+convenient.
 
 #### 0.4.4 What "good" looks like once fixed
 
