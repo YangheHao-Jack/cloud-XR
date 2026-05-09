@@ -14,7 +14,10 @@ Reproduces the working setup in the exact order it was built. Target:
 
 ## Part 0 — Network setup (IPs, connectivity, link quality)
 
-The Linux box and the Quest must be on the **same Wi-Fi network** (same subnet).
+The Linux box and the Quest must be on the **same LAN / subnet** —
+typically the same Wi-Fi network, but per §0.4.3 the recommended
+deployment is Linux on Ethernet and Quest on Wi-Fi, both behind the
+same router.
 You'll reuse these addresses in Parts 4, 5, and everywhere a URL appears below.
 
 ### 0.1 Linux server IP
@@ -94,9 +97,10 @@ overlapping 5 GHz channels — we observed the following:
 What this implied (NVIDIA's docs do not state it directly): **the network
 must deliver each encoded frame within a fixed budget, and high variance
 under load can break the stream even when the average looks fine.** A
-`60 ms avg / 5 ms mdev` link will work cleanly; a `50 ms avg / 80 ms
-mdev` link will not. NVIDIA's thresholds are necessary but not
-sufficient — variance under load matters as much as average.
+link with low average ping but high variance during sustained motion
+behaves worse than one with a slightly higher average but consistent
+timing. NVIDIA's thresholds are necessary but not sufficient — variance
+under load matters as well as average.
 
 #### Symptoms of a bad network during a CloudXR session
 
@@ -120,9 +124,10 @@ A summary line appears at the end like
 
 NVIDIA's docs give end-to-end latency budgets up to 100 ms, but a high
 `mdev` (jitter) under load is the better signal of stream-quality
-problems on Wi-Fi. As a working rule from our observations, sustained
-streaming was clean when `max < 30 ms` and `mdev < 10 ms` during
-motion; above those numbers we saw the corruption symptoms above.
+problems on Wi-Fi. The corruption symptoms above appeared when `max`
+and `mdev` rose during sustained motion; the cleanest single test is
+to compare the ping output during idle vs. continuous motion and look
+at how much both grow.
 
 #### 0.4.2 Check what band each device is on
 
@@ -269,9 +274,18 @@ npm --version                      # 10.x
 ```bash
 sudo ufw allow 47998:48000,48005,48008,48012/udp     # CloudXR media
 sudo ufw allow 48010/tcp                             # CloudXR signaling
+sudo ufw allow 49100/tcp                             # CloudXR runtime WebSocket (NVIDIA web-client docs)
 sudo ufw allow 48322/tcp                             # wss-proxy (browser ↔ runtime)
 sudo ufw allow 8080/tcp                              # CloudXR.js HTTPS dev server
 ```
+
+The 47998:48000,48005,48008,48012/udp range plus 48010/tcp matches the
+[Isaac Lab CloudXR teleoperation tutorial](https://isaac-sim.github.io/IsaacLab/main/source/how-to/cloudxr_teleoperation.html);
+49100/tcp is added per NVIDIA's
+[FAQ on web-client ports](https://docs.nvidia.com/cloudxr-sdk/latest/support/faq.html)
+("Web clients: TCP 49100 (or 48322 for proxy), UDP 47998"). Although
+the wss-proxy connects to 49100 over `localhost`, opening it explicitly
+makes the rule set self-documenting.
 
 ---
 
@@ -586,7 +600,7 @@ docker volume rm cloudxr-proxy-certs
 
 ## Part 5 — End-to-end launch sequence
 
-Five things must be running in this order:
+Four things must be running in this order:
 
 ```bash
 # Terminal 1 — CloudXR runtime (§2.5)
@@ -669,7 +683,7 @@ On the Quest:
 → CloudXR.js 6.1.0 is compatible with CloudXR Runtime 6.x (per NVIDIA release notes). 6.0.5 runtime + 6.1.0 client is a supported pairing.
 
 **Picture corrupts during head motion or scene motion (tearing, macroblocking, ghosting, freezing, flickering)**
-→ Network bandwidth/latency issue, not a code bug. Run §0.4.1 ping test. If `max` >50 ms or `mdev` >10 ms, fix the network (§0.4.3) — Ethernet on Linux is the single biggest win. CloudXR cannot stream cleanly over a contested Wi-Fi link no matter what the software does.
+→ Network bandwidth/latency issue, not a code bug. Run §0.4.1 ping test and compare idle vs. under-motion. If `max` and `mdev` rise sharply during motion, fix the network (§0.4.3) — Ethernet on Linux is NVIDIA's recommended deployment and the single biggest win. CloudXR cannot stream cleanly over a contested Wi-Fi link no matter what the software does.
 
 **Was working, now Quest CONNECT just hangs at "Waiting for connection"; `docker logs wss-proxy` shows `SSL handshake failure ... certificate unknown`**
 → The wss-proxy's self-signed cert expired (typical lifetime ~1 year) or the Quest's trust was wiped. Re-visit `https://<LINUX_IP>:48322/` on the Quest browser, Advanced → Proceed, accept the cert. The CloudXR.js port settings in the form (48010) and the wss-proxy backend (49100) don't change — only the cert trust.
@@ -1430,7 +1444,7 @@ launches has no effect.
 
 ### 9.4 Run — full end-to-end launch sequence
 
-Five things must be running, in this order. Each gets its own terminal.
+Four processes must be running, in this order. Each gets its own terminal.
 
 **Terminal 1 — CloudXR service**
 
@@ -1646,7 +1660,7 @@ deploys over Wi-Fi.
 
 **Prereqs:** Developer Mode enabled on the Quest; `adb` available (shipped
 with Android Studio at `~/Android/Sdk/platform-tools/adb`); Quest and Linux
-on the same Wi-Fi network (both on the subnet you identified in Part 0).
+on the same LAN (the subnet you identified in Part 0).
 
 ### 10.1 Put adb on your PATH (one-time)
 
